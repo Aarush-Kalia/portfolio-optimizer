@@ -50,13 +50,13 @@ def min_volatility_for_target(mean_returns, cov_matrix, target_return):
     return result.x
 
 if __name__ == "__main__":
-    mean_returns = [.08, .12]
-    cov_matrix = [[.0225, .01125], [.01125, .0625]]
+    mean_returns = [.08, .12, .10]
+    cov_matrix = [[.0225, .01125, 0.015], [.01125, .0625, -0.01], [.015, -0.01, .04]]
     weights = max_sharpe_scipy(mean_returns, cov_matrix, risk_free_rate=0.02)
     #print(weights)
 
-    min_vol = min_volatility_for_target(mean_returns, cov_matrix, target_return=.09)
+    min_vol = min_volatility_for_target(mean_returns, cov_matrix, target_return=.095)
     #print(min_vol)
 
-    weights = [0.75, 0.25]
-    print(portfolio_stats(weights, mean_returns, cov_matrix, risk_free_rate = 0.02)[0])
+    weights = [0.625, 0.375, .0]
+    print(portfolio_stats(weights, mean_returns, cov_matrix, risk_free_rate = 0.02)[1])
