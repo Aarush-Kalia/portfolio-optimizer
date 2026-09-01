@@ -1,4 +1,6 @@
 import numpy as np
+import pandas as pd
+import yfinance as yf
 from scipy.optimize import minimize
 from data_loader import stock_data
 
@@ -68,6 +70,28 @@ def efficient_frontier(mean_returns, cov_matrix, num_points = 20):
     smallest_index = np.argmin(vol_list)
     return ret_vol_pair[smallest_index:]
 
+def backtest(tickers, start, end, lookback = 756, rebalance_freq = 63, risk_free_rate = 0.02):
+    data = yf.download(tickers, start, end)
+    closing_prices = data["Close"]
+    df = pd.DataFrame(closing_prices)
+    daily_returns = df.pct_change().dropna()
+    actual_return = []
+
+    for i in range(lookback, len(daily_returns) - rebalance_freq + 1, rebalance_freq):
+        mean_returns = daily_returns.iloc[i - lookback : i, :].mean()
+        cov_matrix = daily_returns.iloc[i - lookback : i, :].cov()
+
+        weights = max_sharpe_scipy(mean_returns, cov_matrix, risk_free_rate)
+        actual_return.extend(np.dot(daily_returns.iloc[i : i+rebalance_freq, :], weights))
+
+    num_rebalances = len(range(lookback, len(daily_returns) - rebalance_freq + 1, rebalance_freq))
+    predicted_length = num_rebalances * rebalance_freq
+    print(predicted_length)
+    print(len(actual_return))
+
+    return actual_return
+
+
 
 
 if __name__ == "__main__":
@@ -82,11 +106,13 @@ if __name__ == "__main__":
     #print(portfolio_stats(weights, mean_returns, cov_matrix, risk_free_rate = 0.02)[1])
 
     
-    mean_returns, cov_matrix = stock_data(["AAPL", "JNJ", "XOM"], "2022-01-01", "2024-01-01")
+    mean_returns, cov_matrix = stock_data(["AAPL", "JNJ", "XOM"], "2000-01-01", "2024-01-01")
     weights = max_sharpe_scipy(mean_returns, cov_matrix, risk_free_rate=0.02)
     frontier = efficient_frontier(mean_returns, cov_matrix, num_points=20)
-    print(weights)
-    print(' vol    ret')
-    for vol, ret in frontier:
-        print(f"{vol:.3f} {ret:.3f}")
 
+    #print(weights)
+    #print(' vol    ret')
+    #for vol, ret in frontier:
+        #print(f"{vol:.3f} {ret:.3f}")
+
+    backtest(["AAPL", "JNJ", "XOM"], "2000-01-01", "2024-01-01")
