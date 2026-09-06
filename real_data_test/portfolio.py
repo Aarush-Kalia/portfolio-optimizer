@@ -81,8 +81,10 @@ def backtest(tickers, start, end, lookback = 756, rebalance_freq = 63, risk_free
     for i in range(lookback, len(daily_returns) - rebalance_freq + 1, rebalance_freq):
         mean_returns = daily_returns.iloc[i - lookback : i, :].mean()
         cov_matrix = daily_returns.iloc[i - lookback : i, :].cov()
-
         weights = max_sharpe_scipy(mean_returns, cov_matrix, risk_free_rate)
+
+        print(i, daily_returns.index[i], weights)
+
         paired = zip(np.dot(daily_returns.iloc[i:i+rebalance_freq, :], weights), daily_returns.iloc[i:i+rebalance_freq, :].index)
         actual_return.extend(paired)
 
@@ -146,6 +148,32 @@ def SPY_backtest(start, end, lookback = 756):
 
     return list(paired)
 
+def plot_benchmark_comparison(tickers, start, end, lookback = 756, rebalance_freq = 63, risk_free_rate = 0.02):
+    info = benchmark_comparison(tickers, start, end, lookback, rebalance_freq)
+    my_strat_info = info[0]
+    equal_weight_info = info[1]
+    SPY_info = info[2]
+
+    dates = [y for x,y in my_strat_info]
+    my_strat_ret = [x for x,y in my_strat_info]
+    equal_weights_ret = [x for x,y in equal_weight_info]
+    SPY_backtest_ret = [x for x,y in SPY_info]
+
+    my_strat_array = np.asarray(my_strat_ret)
+    equal_weights_array = np.asarray(equal_weights_ret)
+    spy_array = np.asarray(SPY_backtest_ret)
+
+    my_strat_plot = np.cumprod(1 + my_strat_array)
+    equal_weight_plot = np.cumprod(1 + equal_weights_array)
+    SPY_plot = np.cumprod(1 + spy_array)
+
+    plt.plot(dates, my_strat_plot, label="Strategy")
+    plt.plot(dates, equal_weight_plot, label="Equal Weight")
+    plt.plot(dates, SPY_plot, label="SPY")
+    plt.legend()
+    plt.show()
+
+
 
 if __name__ == "__main__":
     #mean_returns = [.08, .12, .10]
@@ -177,6 +205,3 @@ if __name__ == "__main__":
     #print(f"Annualized Return: {annual_return:.4f}")
     #print(f"Annualized Volatility: {annual_vol:.4f}")
     #print(f"Sharpe Ratio: {sharpe:.4f}")
-
-    compare = benchmark_comparison(["AAPL", "JNJ", "XOM"], "2000-01-01", "2024-01-01")
-    print(len(compare[0]), len(compare[1]), len(compare[2]))
