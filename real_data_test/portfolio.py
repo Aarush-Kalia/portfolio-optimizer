@@ -71,21 +71,30 @@ def efficient_frontier(mean_returns, cov_matrix, num_points = 20):
     smallest_index = np.argmin(vol_list)
     return ret_vol_pair[smallest_index:]
 
-def backtest(tickers, start, end, lookback = 756, rebalance_freq = 63, risk_free_rate = 0.02):
+def backtest(tickers, start, end, lookback = 756, rebalance_freq = 63, risk_free_rate = 0.02, transaction_cost_rate = 0.0005):
     data = yf.download(tickers, start, end)
     closing_prices = data["Close"]
     df = pd.DataFrame(closing_prices)
     daily_returns = df.pct_change().dropna()
     actual_return = []
+    weights_prev = np.zeros(len(tickers))
 
-    for i in range(lookback, len(daily_returns) - rebalance_freq + 1, rebalance_freq):
+    for i in range(lookback, len(daily_returns) - rebalance_freq, rebalance_freq):
         mean_returns = daily_returns.iloc[i - lookback : i, :].mean()
         cov_matrix = daily_returns.iloc[i - lookback : i, :].cov()
-        weights = max_sharpe_scipy(mean_returns, cov_matrix, risk_free_rate)
+        weights_new = max_sharpe_scipy(mean_returns, cov_matrix, risk_free_rate)
 
-        print(i, daily_returns.index[i], weights)
+        turnover = np.sum(np.abs(weights_new - weights_prev))
+        weights_prev = weights_new
+        cost = turnover * transaction_cost_rate
 
-        paired = zip(np.dot(daily_returns.iloc[i:i+rebalance_freq, :], weights), daily_returns.iloc[i:i+rebalance_freq, :].index)
+        holding_slice = daily_returns.iloc[i + 1:i+rebalance_freq + 1, :]
+        holding_dates = holding_slice.index
+
+        quarter_returns = np.dot(holding_slice, weights_new)
+        quarter_returns[0] = (1 + quarter_returns[0]) * (1 - cost) - 1
+
+        paired = zip(quarter_returns, holding_dates)
         actual_return.extend(paired)
 
     return actual_return
@@ -114,7 +123,7 @@ def benchmark_comparison(tickers, start, end, lookback = 756, rebalance_freq = 6
     equal_weight = equal_weight_backtest(tickers, start, end, lookback)
     SPY_comparison = SPY_backtest(start, end)
 
-    strategy_dates = [date for ret, date in my_strat]
+    strategy_dates = [date for ret, date in my_strat]    
     equal_weight_dates = [date for ret, date in equal_weight]
     spy_dates = [date for ret, date in SPY_comparison]
 
@@ -176,32 +185,32 @@ def plot_benchmark_comparison(tickers, start, end, lookback = 756, rebalance_fre
 
 
 if __name__ == "__main__":
-    #mean_returns = [.08, .12, .10]
-    #cov_matrix = [[.0225, .01125, 0.015], [.01125, .0625, -0.01], [.015, -0.01, .04]]
-    #print(weights)
+    tickers = ["AAPL", "MSFT", "GOOGL", "AMZN", "NVDA",
+           "JPM", "BAC", "V", "MA",
+           "JNJ", "PFE", "UNH", "MRK",
+           "PG", "KO", "WMT", "COST",
+           "HD", "NKE", "MCD",
+           "XOM", "CVX",
+           "GE", "BA", "CAT",
+           "T", "VZ",
+           "F", "GM",
+           "DIS"]
+    start = "2000-01-01"
+    end = "2024-01-01"
 
-    #min_vol = min_volatility_for_target(mean_returns, cov_matrix, target_return=.095)
-    #print(min_vol)
+    strategy_filtered, equal_weight_filtered, spy_filtered = benchmark_comparison(tickers, start, end)
 
-    #weights = [0.625, 0.375, .0]
-    #print(portfolio_stats(weights, mean_returns, cov_matrix, risk_free_rate = 0.02)[1])
+    strategy_returns = [ret for ret, date in strategy_filtered]
+    equal_weight_returns = [ret for ret, date in equal_weight_filtered]
+    spy_returns = [ret for ret, date in spy_filtered]
 
-    
-    mean_returns, cov_matrix = stock_data(["CI", "UNH", "CVS"], "2000-01-01", "2024-01-01")
-    weights = max_sharpe_scipy(mean_returns, cov_matrix, risk_free_rate=0.02)
-    frontier = efficient_frontier(mean_returns, cov_matrix, num_points=20)
+    strat_return, strat_vol, strat_sharpe = backtest_summary(strategy_returns, risk_free_rate=0.02)
+    ew_return, ew_vol, ew_sharpe = backtest_summary(equal_weight_returns, risk_free_rate=0.02)
+    spy_return, spy_vol, spy_sharpe = backtest_summary(spy_returns, risk_free_rate=0.02)
 
-    #print(portfolio_stats(weights, mean_returns, cov_matrix)[2])
+    print(f"{'Strategy':<15}{'Return':>10}{'Vol':>10}{'Sharpe':>10}")
+    print(f"{'My Strategy':<15}{strat_return:>10.4f}{strat_vol:>10.4f}{strat_sharpe:>10.4f}")
+    print(f"{'Equal Weight':<15}{ew_return:>10.4f}{ew_vol:>10.4f}{ew_sharpe:>10.4f}")
+    print(f"{'SPY':<15}{spy_return:>10.4f}{spy_vol:>10.4f}{spy_sharpe:>10.4f}")
 
-    #print(weights)
-    #print(' vol    ret')
-    #for vol, ret in frontier:
-        #print(f"{vol:.3f} {ret:.3f}")
-
-    #print(one_dol_growth(["CI", "UNH", "CVS"], "2000-01-01", "2024-01-01"))
-
-    returns = [x for x, y in backtest(["CI", "UNH", "CVS"], "2000-01-01", "2024-01-01")]
-    annual_return, annual_vol, sharpe = backtest_summary(returns, risk_free_rate=0.02)
-    #print(f"Annualized Return: {annual_return:.4f}")
-    #print(f"Annualized Volatility: {annual_vol:.4f}")
-    #print(f"Sharpe Ratio: {sharpe:.4f}")
+    plot_benchmark_comparison(tickers, start, end)
