@@ -33,9 +33,9 @@ def constraint1(weights):
 def constraint2(weights, mean_returns, cov_matrix, target_return, risk_free_rate = 0.02):
     return portfolio_stats(weights, mean_returns, cov_matrix, risk_free_rate)[0] - target_return
 
-def max_sharpe_scipy(mean_returns, cov_matrix, risk_free_rate = 0.02):
+def max_sharpe_scipy(mean_returns, cov_matrix, max_bound, risk_free_rate = 0.02):
     initial_guess = [1 / len(mean_returns)] * len(mean_returns)
-    bounds = ((0, 1),) * len(mean_returns)
+    bounds = ((0, max_bound),) * len(mean_returns)
 
     cons1 = {'type': 'eq', 'fun': constraint1}
     cons = [cons1]
