@@ -2,7 +2,6 @@ import numpy as np
 import pandas as pd
 import yfinance as yf
 from scipy.optimize import minimize
-from data_loader import stock_data
 import matplotlib.pyplot as plt
 
 def portfolio_stats(weights, mean_returns, cov_matrix, risk_free_rate = 0.02):
@@ -14,7 +13,8 @@ def portfolio_stats(weights, mean_returns, cov_matrix, risk_free_rate = 0.02):
     port_var = weights.T @ cov_matrix @ weights
     port_vol = np.sqrt(port_var)
 
-    sharpe = (port_return - risk_free_rate)/port_vol
+    daily_rf = (1 + risk_free_rate)**(1/252) - 1
+    sharpe = (port_return - daily_rf)/port_vol
 
     return (port_return, port_vol, sharpe)
 
@@ -23,6 +23,20 @@ def objective_max_sharpe(weights, mean_returns, cov_matrix, risk_free_rate = 0.0
 
 def objective_min_vol(weights, mean_returns, cov_matrix, risk_free_rate = 0.02):
     return portfolio_stats(weights, mean_returns, cov_matrix, risk_free_rate)[1]
+
+def objective_risk_parity(weights, cov_matrix):
+    weights = np.asarray(weights)
+    cov_matrix = np.asarray(cov_matrix)
+    port_vol = np.sqrt(weights.T @ cov_matrix @ weights)
+    risk_contribution = []
+    for i in range(len(weights)):
+        risk_contribution.append(weights[i] * (cov_matrix @ weights)[i] / port_vol)
+
+    objective_sum = 0
+    for i in range(len(weights)):
+        objective_sum += (risk_contribution[i] - port_vol / len(weights)) ** 2
+
+    return objective_sum
 
 def constraint1(weights):
     sum = 0
@@ -33,13 +47,25 @@ def constraint1(weights):
 def constraint2(weights, mean_returns, cov_matrix, target_return, risk_free_rate = 0.02):
     return portfolio_stats(weights, mean_returns, cov_matrix, risk_free_rate)[0] - target_return
 
-def max_sharpe_scipy(mean_returns, cov_matrix, max_bound, risk_free_rate = 0.02):
+def max_sharpe_scipy(mean_returns, cov_matrix, max_bound = .25, risk_free_rate = 0.02):
     initial_guess = [1 / len(mean_returns)] * len(mean_returns)
     bounds = ((0, max_bound),) * len(mean_returns)
 
     cons1 = {'type': 'eq', 'fun': constraint1}
     cons = [cons1]
     result = minimize(objective_max_sharpe, initial_guess, method = 'SLSQP', constraints = cons, bounds = bounds, args = (mean_returns, cov_matrix, risk_free_rate))
+
+    return result.x
+
+def risk_parity_scipy(cov_matrix):
+    length = len(cov_matrix)
+    initial_guess = [1 / length] * length
+    bounds = ((0, 1),) * length
+
+    cons1 = {'type': 'eq', 'fun': constraint1}
+    cons = [cons1]
+    result = minimize(objective_risk_parity, initial_guess, method = 'SLSQP', constraints = cons, 
+                      bounds = bounds, args = (cov_matrix, ), options = {'maxiter': 1000, 'ftol': 1e-12})
 
     return result.x
 
@@ -71,18 +97,21 @@ def efficient_frontier(mean_returns, cov_matrix, num_points = 20):
     smallest_index = np.argmin(vol_list)
     return ret_vol_pair[smallest_index:]
 
-def backtest(tickers, start, end, lookback = 756, rebalance_freq = 63, risk_free_rate = 0.02, transaction_cost_rate = 0.0005):
+def get_universe_returns(tickers, start, end):
     data = yf.download(tickers, start, end)
     closing_prices = data["Close"]
     df = pd.DataFrame(closing_prices)
     daily_returns = df.pct_change().dropna()
+    return daily_returns
+
+def backtest(daily_returns, tickers, lookback = 756, rebalance_freq = 63, risk_free_rate = 0.02, transaction_cost_rate = 0.0005):
     actual_return = []
     weights_prev = np.zeros(len(tickers))
 
     for i in range(lookback, len(daily_returns) - rebalance_freq, rebalance_freq):
         mean_returns = daily_returns.iloc[i - lookback : i, :].mean()
         cov_matrix = daily_returns.iloc[i - lookback : i, :].cov()
-        weights_new = max_sharpe_scipy(mean_returns, cov_matrix, risk_free_rate)
+        weights_new = max_sharpe_scipy(mean_returns, cov_matrix, .25, risk_free_rate)
 
         turnover = np.sum(np.abs(weights_new - weights_prev))
         weights_prev = weights_new
@@ -99,14 +128,59 @@ def backtest(tickers, start, end, lookback = 756, rebalance_freq = 63, risk_free
 
     return actual_return
 
-def one_dol_growth(tickers, start, end, lookback = 756, rebalance_freq = 63, risk_free_rate = 0.02):
-    backtest_info = backtest(tickers, start, end, lookback, rebalance_freq, risk_free_rate)
+def backtest_risk_parity(daily_returns, tickers, lookback = 756, rebalance_freq = 63, transaction_cost_rate = 0.0005):
+    actual_return = []
+    weights_prev = np.zeros(len(tickers))
 
-    cumul_plot = [x for x,y in backtest_info]
-    cumul_plot = np.asarray(cumul_plot)
-    cumul_return = np.cumprod(1 + cumul_plot)
-    dates = [y for x,y in backtest_info]
-    plt.plot(dates, cumul_return, color="#ff0000", linewidth=1.25)
+    for i in range(lookback, len(daily_returns) - rebalance_freq, rebalance_freq):
+        cov_matrix = daily_returns.iloc[i - lookback : i, :].cov()
+        weights_new = risk_parity_scipy(cov_matrix)
+
+        turnover = np.sum(np.abs(weights_new - weights_prev))
+        weights_prev = weights_new
+        cost = turnover * transaction_cost_rate
+
+        holding_slice = daily_returns.iloc[i + 1:i+rebalance_freq + 1, :]
+        holding_dates = holding_slice.index
+
+        quarter_returns = np.dot(holding_slice, weights_new)
+        quarter_returns[0] = (1 + quarter_returns[0]) * (1 - cost) - 1
+
+        paired = zip(quarter_returns, holding_dates)
+        actual_return.extend(paired)
+
+    return actual_return
+
+
+def one_dol_growth(tickers, start, end, lookback = 756, rebalance_freq = 63):
+    backtest_info = benchmark_comparison(tickers, start, end, lookback, rebalance_freq)
+    my_strat = backtest_info[0]
+    equal_weight = backtest_info[1]
+    spy = backtest_info[2]
+    risk_parity = backtest_info[3]
+
+    my_strat_cumul_plot = [x for x,y in my_strat]
+    equal_weight_cumul_plot = [x for x,y in equal_weight]
+    spy_cumul_plot = [x for x,y in spy]
+    risk_parity_cumul_plot = [x for x,y in risk_parity]
+
+    my_strat_cumul_plot = np.asarray(my_strat_cumul_plot)
+    equal_weight_cumul_plot = np.asarray(equal_weight_cumul_plot)
+    spy_cumul_plot = np.asarray(spy_cumul_plot)
+    risk_parity_cumul_plot = np.asarray(risk_parity_cumul_plot)
+
+    my_strat_cumul_return = np.cumprod(1 + my_strat_cumul_plot)
+    equal_weight_cumul_return = np.cumprod(1 + equal_weight_cumul_plot)
+    spy_cumul_return = np.cumprod(1 + spy_cumul_plot)
+    risk_parity_cumul_return = np.cumprod(1 + risk_parity_cumul_plot)
+
+    dates = [y for x,y in my_strat]
+
+    plt.plot(dates, my_strat_cumul_return, color="#ff0000", linewidth=1.25, label = "My Strategy")
+    plt.plot(dates, equal_weight_cumul_return, color="#00ff04", linewidth=1.25, label = "Equal Weight")
+    plt.plot(dates, spy_cumul_return, color="#ffae00", linewidth=1.25, label = "S&P 500")
+    plt.plot(dates, risk_parity_cumul_return, color="#0004ff", linewidth=1.25, label = "Risk Parity")
+    plt.legend()
     plt.show()
 
 def backtest_summary(returns, risk_free_rate = 0.02):
@@ -119,28 +193,27 @@ def backtest_summary(returns, risk_free_rate = 0.02):
     return annual_return, annual_vol, sharpe
 
 def benchmark_comparison(tickers, start, end, lookback = 756, rebalance_freq = 63):
-    my_strat = backtest(tickers, start, end, lookback, rebalance_freq)
-    equal_weight = equal_weight_backtest(tickers, start, end, lookback)
+    daily_returns = get_universe_returns(tickers, start, end)
+    my_strat = backtest(daily_returns, tickers, lookback, rebalance_freq)
+    equal_weight = equal_weight_backtest(daily_returns, tickers, lookback)
     SPY_comparison = SPY_backtest(start, end)
+    risk_parity = backtest_risk_parity(daily_returns, tickers, lookback, rebalance_freq)
 
     strategy_dates = [date for ret, date in my_strat]    
     equal_weight_dates = [date for ret, date in equal_weight]
-    spy_dates = [date for ret, date in SPY_comparison]
+    SPY_dates = [date for ret, date in SPY_comparison]
+    risk_parity_dates = [date for ret, date in risk_parity]
 
-    common_dates = set(strategy_dates) & set(equal_weight_dates) & set(spy_dates)
+    common_dates = set(strategy_dates) & set(equal_weight_dates) & set(SPY_dates) & set(risk_parity_dates)
 
     strategy_filtered = [pair for pair in my_strat if pair[1] in common_dates]
     equal_weight_filtered = [pair for pair in equal_weight if pair[1] in common_dates]
     spy_filtered = [pair for pair in SPY_comparison if pair[1] in common_dates]
+    risk_parity_filtered = [pair for pair in risk_parity if pair[1] in common_dates]
 
-    return strategy_filtered, equal_weight_filtered, spy_filtered
+    return strategy_filtered, equal_weight_filtered, spy_filtered, risk_parity_filtered
 
-def equal_weight_backtest(tickers, start, end, lookback=756):
-    data = yf.download(tickers, start, end)
-    closing_prices = data["Close"]
-    df = pd.DataFrame(closing_prices)
-    daily_returns = df.pct_change().dropna()
-
+def equal_weight_backtest(daily_returns, tickers, lookback=756):
     weights = [1 / len(tickers)] * len(tickers)
     sliced = daily_returns.iloc[lookback:, :]
 
@@ -157,60 +230,18 @@ def SPY_backtest(start, end, lookback = 756):
 
     return list(paired)
 
-def plot_benchmark_comparison(tickers, start, end, lookback = 756, rebalance_freq = 63, risk_free_rate = 0.02):
-    info = benchmark_comparison(tickers, start, end, lookback, rebalance_freq)
-    my_strat_info = info[0]
-    equal_weight_info = info[1]
-    SPY_info = info[2]
-
-    dates = [y for x,y in my_strat_info]
-    my_strat_ret = [x for x,y in my_strat_info]
-    equal_weights_ret = [x for x,y in equal_weight_info]
-    SPY_backtest_ret = [x for x,y in SPY_info]
-
-    my_strat_array = np.asarray(my_strat_ret)
-    equal_weights_array = np.asarray(equal_weights_ret)
-    spy_array = np.asarray(SPY_backtest_ret)
-
-    my_strat_plot = np.cumprod(1 + my_strat_array)
-    equal_weight_plot = np.cumprod(1 + equal_weights_array)
-    SPY_plot = np.cumprod(1 + spy_array)
-
-    plt.plot(dates, my_strat_plot, label="Strategy")
-    plt.plot(dates, equal_weight_plot, label="Equal Weight")
-    plt.plot(dates, SPY_plot, label="SPY")
-    plt.legend()
-    plt.show()
-
-
-
 if __name__ == "__main__":
-    tickers = ["AAPL", "MSFT", "GOOGL", "AMZN", "NVDA",
-           "JPM", "BAC", "V", "MA",
+    tickers = ["AAPL", "MSFT", "AMZN", "NVDA",
+           "JPM", "BAC", 
            "JNJ", "PFE", "UNH", "MRK",
            "PG", "KO", "WMT", "COST",
            "HD", "NKE", "MCD",
            "XOM", "CVX",
            "GE", "BA", "CAT",
            "T", "VZ",
-           "F", "GM",
+           "F",
            "DIS"]
     start = "2000-01-01"
     end = "2024-01-01"
 
-    strategy_filtered, equal_weight_filtered, spy_filtered = benchmark_comparison(tickers, start, end)
-
-    strategy_returns = [ret for ret, date in strategy_filtered]
-    equal_weight_returns = [ret for ret, date in equal_weight_filtered]
-    spy_returns = [ret for ret, date in spy_filtered]
-
-    strat_return, strat_vol, strat_sharpe = backtest_summary(strategy_returns, risk_free_rate=0.02)
-    ew_return, ew_vol, ew_sharpe = backtest_summary(equal_weight_returns, risk_free_rate=0.02)
-    spy_return, spy_vol, spy_sharpe = backtest_summary(spy_returns, risk_free_rate=0.02)
-
-    print(f"{'Strategy':<15}{'Return':>10}{'Vol':>10}{'Sharpe':>10}")
-    print(f"{'My Strategy':<15}{strat_return:>10.4f}{strat_vol:>10.4f}{strat_sharpe:>10.4f}")
-    print(f"{'Equal Weight':<15}{ew_return:>10.4f}{ew_vol:>10.4f}{ew_sharpe:>10.4f}")
-    print(f"{'SPY':<15}{spy_return:>10.4f}{spy_vol:>10.4f}{spy_sharpe:>10.4f}")
-
-    plot_benchmark_comparison(tickers, start, end)
+    print(one_dol_growth(tickers, start, end))
