@@ -111,7 +111,25 @@ def backtest(daily_returns, tickers, lookback = 756, rebalance_freq = 63, risk_f
     for i in range(lookback, len(daily_returns) - rebalance_freq, rebalance_freq):
         mean_returns = daily_returns.iloc[i - lookback : i, :].mean()
         cov_matrix = daily_returns.iloc[i - lookback : i, :].cov()
-        weights_new = max_sharpe_scipy(mean_returns, cov_matrix, .25, risk_free_rate)
+        volatility_list = np.sqrt(np.diag(cov_matrix))
+
+        individual_mean = [value for value in mean_returns]
+        individual_std = [value for value in volatility_list]
+
+        z_score_mean = (individual_mean - np.mean(individual_mean))/np.std(individual_mean)
+        z_score_std = (individual_std - np.mean(individual_std))/np.std(individual_std)
+        composite = (z_score_mean - z_score_std) / 2
+
+        score_over_zero = []
+        for index, value in enumerate(composite):
+            if value > 0:
+                score_over_zero.append((index, value))
+
+        sorted(score_over_zero, key=lambda pair: pair[1])
+
+        weights_new = np.zeros(len(tickers))
+        for i in range(len(score_over_zero)):
+            weights_new[i] = (2 * (i + 1) / (len(score_over_zero)*(len(score_over_zero) + 1)))
 
         turnover = np.sum(np.abs(weights_new - weights_prev))
         weights_prev = weights_new
