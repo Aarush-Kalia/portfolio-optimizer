@@ -113,7 +113,7 @@ def backtest(daily_returns, tickers, lookback = 756, rebalance_freq = 63, risk_f
         cov_matrix = daily_returns.iloc[i - lookback : i, :].cov()
         volatility_list = np.sqrt(np.diag(cov_matrix))
 
-        individual_mean = [value for value in mean_returns]
+        shrinkage, individual_mean = shrink_mean_returns(mean_returns, cov_matrix, lookback)
         individual_std = [value for value in volatility_list]
 
         z_score_mean = (individual_mean - np.mean(individual_mean))/np.std(individual_mean)
@@ -125,12 +125,19 @@ def backtest(daily_returns, tickers, lookback = 756, rebalance_freq = 63, risk_f
             if value > 0:
                 score_over_zero.append((index, value))
 
-        sorted(score_over_zero, key=lambda pair: pair[1])
+        score_over_zero = sorted(score_over_zero, key=lambda pair: pair[1])
 
+        k = len(score_over_zero)
         weights_new = np.zeros(len(tickers))
-        for i in range(len(score_over_zero)):
-            weights_new[i] = (2 * (i + 1) / (len(score_over_zero)*(len(score_over_zero) + 1)))
 
+
+        for j, (original_index, score) in enumerate(score_over_zero):
+            rank = j + 1
+            weights_new[original_index] = (2 * rank) / (k * (k + 1))
+
+        cap = (2 - shrinkage) / k
+        weights_new = apply_cap(weights_new, cap)
+        
         turnover = np.sum(np.abs(weights_new - weights_prev))
         weights_prev = weights_new
         cost = turnover * transaction_cost_rate
@@ -168,7 +175,6 @@ def backtest_risk_parity(daily_returns, tickers, lookback = 756, rebalance_freq 
         actual_return.extend(paired)
 
     return actual_return
-
 
 def one_dol_growth(tickers, start, end, lookback = 756, rebalance_freq = 63):
     backtest_info = benchmark_comparison(tickers, start, end, lookback, rebalance_freq)
@@ -247,6 +253,36 @@ def SPY_backtest(start, end, lookback = 756):
     paired = zip(daily_returns["SPY"].iloc[lookback:], daily_returns.index[lookback:])
 
     return list(paired)
+
+def shrink_mean_returns(mean_returns, cov_matrix, lookback = 756):
+    grand_mean = sum(mean_returns) / len(mean_returns)
+    individual_var = np.diag(cov_matrix)
+    sample_variance = 1 / len(mean_returns) * (sum(individual_var / lookback))
+    dispersion = sum((mean_returns - grand_mean) ** 2)
+
+    shrinkage = np.clip((len(mean_returns) - 3) * sample_variance / dispersion, 0, 1)
+    shrunk_returns = grand_mean + (1 - shrinkage) * (mean_returns - grand_mean)
+
+    return shrinkage, shrunk_returns
+
+def apply_cap(weights, cap):
+    adjusted_weights = weights.copy()
+
+    for _ in range(20):
+        over_mask = adjusted_weights > cap
+        if not over_mask.any():
+            break
+
+        overflow = (adjusted_weights[over_mask] - cap).sum()
+        adjusted_weights[over_mask] = cap
+
+        under_mask = ~over_mask
+        under_cap_total = adjusted_weights[under_mask].sum()
+        adjusted_weights[under_mask] += overflow * (adjusted_weights[under_mask] / under_cap_total)
+
+    return adjusted_weights
+    
+    
 
 if __name__ == "__main__":
     tickers = ["AAPL", "MSFT", "AMZN", "NVDA",
