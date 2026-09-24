@@ -4,6 +4,7 @@ import yfinance as yf
 from scipy.optimize import minimize
 import matplotlib.pyplot as plt
 
+# Computes a portfolio's expected return, volatility, and Sharpe ratio given a set of weights
 def portfolio_stats(weights, mean_returns, cov_matrix, risk_free_rate = 0.02):
     weights = np.asarray(weights)
     mean_returns = np.asarray(mean_returns)
@@ -18,12 +19,15 @@ def portfolio_stats(weights, mean_returns, cov_matrix, risk_free_rate = 0.02):
 
     return (port_return, port_vol, sharpe)
 
+# Negative Sharpe ratio - lets the optimizer "maximize Sharpe" by minimizing this
 def objective_max_sharpe(weights, mean_returns, cov_matrix, risk_free_rate = 0.02):
     return -1 * portfolio_stats(weights, mean_returns, cov_matrix, risk_free_rate)[2]
 
+# Portfolio volatility - the value the min-volatility optimizer tries to minimize
 def objective_min_vol(weights, mean_returns, cov_matrix, risk_free_rate = 0.02):
     return portfolio_stats(weights, mean_returns, cov_matrix, risk_free_rate)[1]
 
+# Measures how far a portfolio is from every stock contributing equal risk
 def objective_risk_parity(weights, cov_matrix):
     weights = np.asarray(weights)
     cov_matrix = np.asarray(cov_matrix)
@@ -38,15 +42,18 @@ def objective_risk_parity(weights, cov_matrix):
 
     return objective_sum
 
+# Enforces that portfolio weights sum to 1
 def constraint1(weights):
     sum = 0
     for i in range(len(weights)):
         sum += weights[i]
     return sum - 1
 
+# Enforces that portfolio return hits a specific target
 def constraint2(weights, mean_returns, cov_matrix, target_return, risk_free_rate = 0.02):
     return portfolio_stats(weights, mean_returns, cov_matrix, risk_free_rate)[0] - target_return
 
+# Original approach: finds max-Sharpe weights via scipy's optimizer (superseded by backtest()'s composite-score method)
 def max_sharpe_scipy(mean_returns, cov_matrix, max_bound = .25, risk_free_rate = 0.02):
     initial_guess = [1 / len(mean_returns)] * len(mean_returns)
     bounds = ((0, max_bound),) * len(mean_returns)
@@ -57,6 +64,7 @@ def max_sharpe_scipy(mean_returns, cov_matrix, max_bound = .25, risk_free_rate =
 
     return result.x
 
+# Finds the weights that equalize each stock's risk contribution
 def risk_parity_scipy(cov_matrix):
     length = len(cov_matrix)
     initial_guess = [1 / length] * length
@@ -69,6 +77,7 @@ def risk_parity_scipy(cov_matrix):
 
     return result.x
 
+# Finds the lowest-volatility weights for a given target return
 def min_volatility_for_target(mean_returns, cov_matrix, target_return):
     initial_guess = [1 / len(mean_returns)] * len(mean_returns)
     bounds = ((0, 1),) * len(mean_returns)
@@ -79,6 +88,7 @@ def min_volatility_for_target(mean_returns, cov_matrix, target_return):
     result = minimize(objective_min_vol, initial_guess, method = 'SLSQP', constraints = cons, bounds = bounds, args = (mean_returns, cov_matrix))
     return result.x
 
+# Traces the minimum-volatility portfolio across a range of target returns
 def efficient_frontier(mean_returns, cov_matrix, num_points = 20):
     mean_returns = np.asarray(mean_returns)
     target_values = np.linspace(min(mean_returns), max(mean_returns), num_points)
@@ -97,6 +107,7 @@ def efficient_frontier(mean_returns, cov_matrix, num_points = 20):
     smallest_index = np.argmin(vol_list)
     return ret_vol_pair[smallest_index:]
 
+# Downloads price data for a ticker list and converts it to daily returns
 def get_universe_returns(tickers, start, end):
     data = yf.download(tickers, start, end)
     closing_prices = data["Close"]
@@ -104,6 +115,7 @@ def get_universe_returns(tickers, start, end):
     daily_returns = df.pct_change().dropna()
     return daily_returns
 
+# Runs the actual strategy: composite score -> rank-weighting -> cap -> blend with equal weight by shrinkage
 def backtest(daily_returns, tickers, lookback = 756, rebalance_freq = 63, risk_free_rate = 0.02, transaction_cost_rate = 0.0005):
     actual_return = []
     weights_prev = np.zeros(len(tickers))
@@ -116,7 +128,10 @@ def backtest(daily_returns, tickers, lookback = 756, rebalance_freq = 63, risk_f
         shrinkage, individual_mean = shrink_mean_returns(mean_returns, cov_matrix, lookback)
         individual_std = [value for value in volatility_list]
 
-        z_score_mean = (individual_mean - np.mean(individual_mean))/np.std(individual_mean)
+        if np.std(individual_mean) == 0:
+            z_score_mean = np.zeros(len(individual_mean))
+        else:
+            z_score_mean = (individual_mean - np.mean(individual_mean))/np.std(individual_mean)
         z_score_std = (individual_std - np.mean(individual_std))/np.std(individual_std)
         composite = (z_score_mean - z_score_std) / 2
 
@@ -137,6 +152,9 @@ def backtest(daily_returns, tickers, lookback = 756, rebalance_freq = 63, risk_f
 
         cap = (2 - shrinkage) / k
         weights_new = apply_cap(weights_new, cap)
+
+        weights_new = shrinkage * (np.ones(len(tickers)) / len(tickers)) + (1 - shrinkage) * weights_new
+        weights_new = weights_new / weights_new.sum()
         
         turnover = np.sum(np.abs(weights_new - weights_prev))
         weights_prev = weights_new
@@ -153,6 +171,7 @@ def backtest(daily_returns, tickers, lookback = 756, rebalance_freq = 63, risk_f
 
     return actual_return
 
+# Runs a rolling risk-parity strategy on the same rebalance schedule as backtest()
 def backtest_risk_parity(daily_returns, tickers, lookback = 756, rebalance_freq = 63, transaction_cost_rate = 0.0005):
     actual_return = []
     weights_prev = np.zeros(len(tickers))
@@ -176,6 +195,7 @@ def backtest_risk_parity(daily_returns, tickers, lookback = 756, rebalance_freq 
 
     return actual_return
 
+# Plots the growth of $1 invested in each of the four strategies over time
 def one_dol_growth(tickers, start, end, lookback = 756, rebalance_freq = 63):
     backtest_info = benchmark_comparison(tickers, start, end, lookback, rebalance_freq)
     my_strat = backtest_info[0]
@@ -199,14 +219,16 @@ def one_dol_growth(tickers, start, end, lookback = 756, rebalance_freq = 63):
     risk_parity_cumul_return = np.cumprod(1 + risk_parity_cumul_plot)
 
     dates = [y for x,y in my_strat]
+    plt.figure()
 
-    plt.plot(dates, my_strat_cumul_return, color="#ff0000", linewidth=1.25, label = "My Strategy")
-    plt.plot(dates, equal_weight_cumul_return, color="#00ff04", linewidth=1.25, label = "Equal Weight")
-    plt.plot(dates, spy_cumul_return, color="#ffae00", linewidth=1.25, label = "S&P 500")
-    plt.plot(dates, risk_parity_cumul_return, color="#0004ff", linewidth=1.25, label = "Risk Parity")
+    plt.plot(dates, my_strat_cumul_return, color="#ff0000", linewidth=.75, label = "My Strategy")
+    plt.plot(dates, equal_weight_cumul_return, color="#00ff04", linewidth=.75, label = "Equal Weight")
+    plt.plot(dates, spy_cumul_return, color="#ffae00", linewidth=.75, label = "S&P 500")
+    plt.plot(dates, risk_parity_cumul_return, color="#0004ff", linewidth=.75, label = "Risk Parity")
     plt.legend()
     plt.show()
 
+# Computes annualized return, volatility, and Sharpe ratio for a return series
 def backtest_summary(returns, risk_free_rate = 0.02):
     returns = np.asarray(returns)
     cumul_return = np.cumprod(1 + returns)
@@ -216,6 +238,7 @@ def backtest_summary(returns, risk_free_rate = 0.02):
 
     return annual_return, annual_vol, sharpe
 
+# Runs all four strategies over the same period and aligns their dates for comparison
 def benchmark_comparison(tickers, start, end, lookback = 756, rebalance_freq = 63):
     daily_returns = get_universe_returns(tickers, start, end)
     my_strat = backtest(daily_returns, tickers, lookback, rebalance_freq)
@@ -237,6 +260,7 @@ def benchmark_comparison(tickers, start, end, lookback = 756, rebalance_freq = 6
 
     return strategy_filtered, equal_weight_filtered, spy_filtered, risk_parity_filtered
 
+# Computes returns from holding all tickers at equal weight
 def equal_weight_backtest(daily_returns, tickers, lookback=756):
     weights = [1 / len(tickers)] * len(tickers)
     sliced = daily_returns.iloc[lookback:, :]
@@ -244,6 +268,7 @@ def equal_weight_backtest(daily_returns, tickers, lookback=756):
     paired = zip(np.dot(sliced, weights), sliced.index)
     return list(paired)
 
+# Computes S&P 500 returns as a benchmark
 def SPY_backtest(start, end, lookback = 756):
     data = yf.download("SPY", start, end)
     closing_prices = data["Close"]
@@ -254,6 +279,7 @@ def SPY_backtest(start, end, lookback = 756):
 
     return list(paired)
 
+# Pulls each stock's noisy mean return toward the group average, scaled by how much it can be trusted
 def shrink_mean_returns(mean_returns, cov_matrix, lookback = 756):
     grand_mean = sum(mean_returns) / len(mean_returns)
     individual_var = np.diag(cov_matrix)
@@ -265,6 +291,7 @@ def shrink_mean_returns(mean_returns, cov_matrix, lookback = 756):
 
     return shrinkage, shrunk_returns
 
+# Caps any single stock's weight and redistributes the excess proportionally to the rest
 def apply_cap(weights, cap):
     adjusted_weights = weights.copy()
 
@@ -281,8 +308,7 @@ def apply_cap(weights, cap):
         adjusted_weights[under_mask] += overflow * (adjusted_weights[under_mask] / under_cap_total)
 
     return adjusted_weights
-    
-    
+
 
 if __name__ == "__main__":
     tickers = ["AAPL", "MSFT", "AMZN", "NVDA",
@@ -294,8 +320,15 @@ if __name__ == "__main__":
            "GE", "BA", "CAT",
            "T", "VZ",
            "F",
-           "DIS"]
-    start = "2000-01-01"
-    end = "2024-01-01"
+           "DIS",
+           "INTC", "IBM", "CSCO",
+           "AXP",
+           "PEP",
+           "MMM", "UNP",
+           "LOW",
+           "SO",
+           "ABT"]
 
-    print(one_dol_growth(tickers, start, end))
+    start = "2000-01-01"
+    end = "2025-01-01"
+    one_dol_growth(tickers, start, end, 756, 63)
